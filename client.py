@@ -784,35 +784,35 @@ async def get_stats():
 
 @app.post("/upload")
 async def upload_file(
-   file: UploadFile = File(...),
-   target_path: Optional[str] = None
+    file: UploadFile = File(...),
+    target_path: Optional[str] = None
 ):
- """Direct file upload endpoint - handles large files efficiently"""
- if not target_path:
-     # Default to mathcad working directory with original filename
-     target_path = os.path.join(MATHCAD_WORKING_DIR, file.filename)
-  try:
-     # Ensure directory exists
-     os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    
-     # Stream file to disk in 1MB chunks
-     bytes_written = 0
-     async with aiofiles.open(target_path, 'wb') as out_file:
-         while chunk := await file.read(1024 * 1024):  # 1MB chunks
-             await out_file.write(chunk)
-             bytes_written += len(chunk)
-    
-     logger.info(f"File uploaded successfully: {target_path} ({bytes_written:,} bytes)")
-    
-     return {
-         "status": "success",
-         "path": target_path,
-         "size": bytes_written,
-         "filename": file.filename
-     }
- except Exception as e:
-     logger.error(f"Upload failed: {e}")
-     raise HTTPException(500, f"Upload failed: {str(e)}")
+    """Direct file upload endpoint - handles large files efficiently"""
+    if not target_path:
+        # Default to mathcad working directory with original filename
+        target_path = os.path.join(MATHCAD_WORKING_DIR, file.filename)
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        
+        # Stream file to disk in 1MB chunks
+        bytes_written = 0
+        async with aiofiles.open(target_path, 'wb') as out_file:
+            while chunk := await file.read(1024 * 1024):  # 1MB chunks
+                await out_file.write(chunk)
+                bytes_written += len(chunk)
+        
+        logger.info(f"File uploaded successfully: {target_path} ({bytes_written:,} bytes)")
+        
+        return {
+            "status": "success",
+            "path": target_path,
+            "size": bytes_written,
+            "filename": file.filename
+        }
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(500, f"Upload failed: {str(e)}")
 
 
 
@@ -914,62 +914,62 @@ async def websocket_monitor(websocket: WebSocket):
 
 
 def _collect_mathcad_processes():
-  """Fast part: enumerate Mathcad processes without open_files()"""
-  mathcad_processes = []
-   try:
-      process_count = 0
-      for proc in psutil.process_iter(['pid', 'name', 'create_time', 'memory_info']):
-          process_count += 1
-          try:
-              proc_name = proc.info.get('name', '')
-              if proc_name and 'MathcadPrime' in proc_name:
-                  # Get additional process info
-                  create_time = datetime.fromtimestamp(proc.info['create_time']).strftime('%Y-%m-%d %H:%M:%S')
-                  memory_mb = proc.info['memory_info'].rss / 1024 / 1024  # Convert to MB
+    """Fast part: enumerate Mathcad processes without open_files()"""
+    mathcad_processes = []
+    try:
+        process_count = 0
+        for proc in psutil.process_iter(['pid', 'name', 'create_time', 'memory_info']):
+            process_count += 1
+            try:
+                proc_name = proc.info.get('name', '')
+                if proc_name and 'MathcadPrime' in proc_name:
+                    # Get additional process info
+                    create_time = datetime.fromtimestamp(proc.info['create_time']).strftime('%Y-%m-%d %H:%M:%S')
+                    memory_mb = proc.info['memory_info'].rss / 1024 / 1024  # Convert to MB
 
 
 
 
-                  process_info = {
-                      'pid': proc.info['pid'],
-                      'name': proc.info['name'],
-                      'create_time': create_time,
-                      'memory_mb': round(memory_mb, 2),
-                      'cpu_percent': 0,  # Default to 0
-                      'open_files': []  # Will be filled later
-                  }
+                    process_info = {
+                        'pid': proc.info['pid'],
+                        'name': proc.info['name'],
+                        'create_time': create_time,
+                        'memory_mb': round(memory_mb, 2),
+                        'cpu_percent': 0,  # Default to 0
+                        'open_files': []  # Will be filled later
+                    }
 
 
 
 
-                  # Try to get CPU percent (quick check)
-                  try:
-                      cpu_percent = proc.cpu_percent(interval=0.1)
-                      process_info['cpu_percent'] = cpu_percent
-                  except:
-                      pass
+                    # Try to get CPU percent (quick check)
+                    try:
+                        cpu_percent = proc.cpu_percent(interval=0.1)
+                        process_info['cpu_percent'] = cpu_percent
+                    except:
+                        pass
 
 
 
 
-                  mathcad_processes.append(process_info)
+                    mathcad_processes.append(process_info)
 
 
 
 
-          except (psutil.NoSuchProcess, psutil.AccessDenied):
-              pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
 
 
 
-      logger.info(f"Checked {process_count} processes, found {len(mathcad_processes)} Mathcad instances")
-      return mathcad_processes
+        logger.info(f"Checked {process_count} processes, found {len(mathcad_processes)} Mathcad instances")
+        return mathcad_processes
 
 
-  except Exception as e:
-      logger.error(f"Error collecting processes: {e}")
-      return []
+    except Exception as e:
+        logger.error(f"Error collecting processes: {e}")
+        return []
 
 
 
@@ -979,24 +979,24 @@ def _collect_mathcad_processes():
 
 
 def _get_mcdx_for_pid(pid):
-  """Heavy part: get open files for a single process (run in worker thread)"""
-  try:
-      proc = psutil.Process(pid)
-      # Use generator to avoid loading all files if we hit an error
-      open_files = []
-      for f in proc.open_files():
-          if f.path.endswith('.mcdx'):
-              open_files.append(f.path)
-      return pid, open_files
-  except psutil.AccessDenied:
-      logger.warning(f"Access denied getting open files for PID {pid} - skipping")
-      return pid, []
-  except psutil.NoSuchProcess:
-      logger.debug(f"Process {pid} no longer exists")
-      return pid, []
-  except Exception as e:
-      logger.error(f"Error getting open files for PID {pid}: {e}", exc_info=True)
-      return pid, []
+    """Heavy part: get open files for a single process (run in worker thread)"""
+    try:
+        proc = psutil.Process(pid)
+        # Use generator to avoid loading all files if we hit an error
+        open_files = []
+        for f in proc.open_files():
+            if f.path.endswith('.mcdx'):
+                open_files.append(f.path)
+        return pid, open_files
+    except psutil.AccessDenied:
+        logger.warning(f"Access denied getting open files for PID {pid} - skipping")
+        return pid, []
+    except psutil.NoSuchProcess:
+        logger.debug(f"Process {pid} no longer exists")
+        return pid, []
+    except Exception as e:
+        logger.error(f"Error getting open files for PID {pid}: {e}", exc_info=True)
+        return pid, []
 
 
 
@@ -1015,85 +1015,85 @@ def _get_mcdx_for_pid(pid):
 
 
 async def check_mathcad_status():
- """Check if Mathcad is running and get process details (proper async implementation)"""
- try:
-     loop = asyncio.get_running_loop()
+    """Check if Mathcad is running and get process details (proper async implementation)"""
+    try:
+        loop = asyncio.get_running_loop()
+        
+        # 1. Fast snapshot of processes (without open_files)
+        mathcad_processes = await loop.run_in_executor(_io_executor, _collect_mathcad_processes)
    
-     # 1. Fast snapshot of processes (without open_files)
-     mathcad_processes = await loop.run_in_executor(_io_executor, _collect_mathcad_processes)
-   
-     # 2. Concurrent open_files() probes, bounded by semaphore
-     async def probe_open_files(pid):
-         async with _io_semaphore:
-             return await loop.run_in_executor(_io_executor, _get_mcdx_for_pid, pid)
-   
-     # Get all open files concurrently
-     if mathcad_processes:
-         open_files_results = await asyncio.gather(
-             *(probe_open_files(p['pid']) for p in mathcad_processes),
-             return_exceptions=True
-         )
-       
-         # Merge results back into process info
-         open_files_map = {}
-         for result in open_files_results:
-             if isinstance(result, tuple) and len(result) == 2:
-                 pid, files = result
-                 open_files_map[pid] = files
-       
-         # Update process info with open files
-         for proc_info in mathcad_processes:
-             proc_info['open_files'] = open_files_map.get(proc_info['pid'], [])
-   
-     # Collect all open files
-     all_open_files = []
-     for proc in mathcad_processes:
-         all_open_files.extend(proc.get('open_files', []))
+        # 2. Concurrent open_files() probes, bounded by semaphore
+        async def probe_open_files(pid):
+            async with _io_semaphore:
+                return await loop.run_in_executor(_io_executor, _get_mcdx_for_pid, pid)
+        
+        # Get all open files concurrently
+        if mathcad_processes:
+            open_files_results = await asyncio.gather(
+                *(probe_open_files(p['pid']) for p in mathcad_processes),
+                return_exceptions=True
+            )
+            
+            # Merge results back into process info
+            open_files_map = {}
+            for result in open_files_results:
+                if isinstance(result, tuple) and len(result) == 2:
+                    pid, files = result
+                    open_files_map[pid] = files
+            
+            # Update process info with open files
+            for proc_info in mathcad_processes:
+                proc_info['open_files'] = open_files_map.get(proc_info['pid'], [])
+        
+        # Collect all open files
+        all_open_files = []
+        for proc in mathcad_processes:
+            all_open_files.extend(proc.get('open_files', []))
 
 
 
 
-     # Check working directory
-     working_dir_files = []
-     if os.path.exists(MATHCAD_WORKING_DIR):
-         try:
-             all_files = await loop.run_in_executor(
-                 _io_executor,
-                 lambda: os.listdir(MATHCAD_WORKING_DIR)
-             )
-             working_dir_files = [f for f in all_files if f.endswith('.mcdx')]
-         except Exception as e:
-             logger.debug(f"Error listing working directory: {e}")
+        # Check working directory
+        working_dir_files = []
+        if os.path.exists(MATHCAD_WORKING_DIR):
+            try:
+                all_files = await loop.run_in_executor(
+                    _io_executor,
+                    lambda: os.listdir(MATHCAD_WORKING_DIR)
+                )
+                working_dir_files = [f for f in all_files if f.endswith('.mcdx')]
+            except Exception as e:
+                logger.debug(f"Error listing working directory: {e}")
 
 
 
 
-     # Create result dictionary
-     result = {
-         'is_running': len(mathcad_processes) > 0,
-         'processes': mathcad_processes,
-         'open_files': all_open_files,
-         'working_dir_files': working_dir_files
-     }
+        # Create result dictionary
+        result = {
+            'is_running': len(mathcad_processes) > 0,
+            'processes': mathcad_processes,
+            'open_files': all_open_files,
+            'working_dir_files': working_dir_files
+        }
 
 
 
 
-     return result
+        return result
 
 
 
 
- except Exception as e:
-     logger.error(f"Fatal error in status check: {e}")
-     # Return default on error
-     return {
-         'is_running': False,
-         'processes': [],
-         'open_files': [],
-         'working_dir_files': [],
-         'error': str(e)
-     }
+    except Exception as e:
+        logger.error(f"Fatal error in status check: {e}")
+        # Return default on error
+        return {
+            'is_running': False,
+            'processes': [],
+            'open_files': [],
+            'working_dir_files': [],
+            'error': str(e)
+        }
 
 
 
@@ -1241,70 +1241,70 @@ async def background_mathcad_monitor():
 # SAP2000 REST endpoints
 @app.post("/sap/connect")
 async def sap_connect():
- """Connect to SAP2000 and create COM object"""
- global sap2000_state
- if sap2000_state["is_connected"] and sap2000_state["instance"]:
-     return {
-         "status": "already_connected",
-         "message": "SAP2000 is already connected"
-     }
- try:
-     logger.info("Connecting to SAP2000...")
-     start_time = datetime.utcnow()
-   
-     # Run COM operations in thread
-     def _connect_sap():
-         # Import comtypes
-         import comtypes.client
-       
-         # Create API helper object
-         helper = comtypes.client.CreateObject('SAP2000v1.Helper')
-         helper = helper.QueryInterface(comtypes.gen.SAP2000v1.cHelper)
-       
-         # Create SAP2000 instance
-         sap_object = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
-       
-         # Start SAP2000 application
-         ret = sap_object.ApplicationStart()
-       
-         if ret == 0:
-             # Make visible
-             sap_object.Visible = True
-             return sap_object, sap_object.SapModel, ret
-         else:
-             return None, None, ret
-   
-     # Execute in thread
-     sap_object, sap_model, ret = await to_thread(_connect_sap)
-   
-     if ret == 0 and sap_object:
-         # Store references
-         sap2000_state["instance"] = sap_object
-         sap2000_state["model"] = sap_model
-         sap2000_state["is_connected"] = True
-         sap2000_state["last_activity"] = datetime.utcnow()
-       
-         # Calculate launch time
-         launch_time = (datetime.utcnow() - start_time).total_seconds()
-         logger.info(f"SAP2000 connected successfully in {launch_time:.2f} seconds")
-       
-         return {
-             "status": "connected",
-             "message": "SAP2000 started successfully",
-             "launch_time_seconds": round(launch_time, 2)
-         }
-     else:
-         return {
-             "status": "error",
-             "message": f"Failed to start SAP2000, return code: {ret}"
-         }
-       
- except Exception as e:
-     logger.error(f"Error connecting to SAP2000: {e}")
-     return {
-         "status": "error",
-         "message": str(e)
-     }
+    """Connect to SAP2000 and create COM object"""
+    global sap2000_state
+    if sap2000_state["is_connected"] and sap2000_state["instance"]:
+        return {
+            "status": "already_connected",
+            "message": "SAP2000 is already connected"
+        }
+    try:
+        logger.info("Connecting to SAP2000...")
+        start_time = datetime.utcnow()
+        
+        # Run COM operations in thread
+        def _connect_sap():
+            # Import comtypes
+            import comtypes.client
+            
+            # Create API helper object
+            helper = comtypes.client.CreateObject('SAP2000v1.Helper')
+            helper = helper.QueryInterface(comtypes.gen.SAP2000v1.cHelper)
+            
+            # Create SAP2000 instance
+            sap_object = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
+            
+            # Start SAP2000 application
+            ret = sap_object.ApplicationStart()
+            
+            if ret == 0:
+                # Make visible
+                sap_object.Visible = True
+                return sap_object, sap_object.SapModel, ret
+            else:
+                return None, None, ret
+        
+        # Execute in thread
+        sap_object, sap_model, ret = await to_thread(_connect_sap)
+        
+        if ret == 0 and sap_object:
+            # Store references
+            sap2000_state["instance"] = sap_object
+            sap2000_state["model"] = sap_model
+            sap2000_state["is_connected"] = True
+            sap2000_state["last_activity"] = datetime.utcnow()
+            
+            # Calculate launch time
+            launch_time = (datetime.utcnow() - start_time).total_seconds()
+            logger.info(f"SAP2000 connected successfully in {launch_time:.2f} seconds")
+            
+            return {
+                "status": "connected",
+                "message": "SAP2000 started successfully",
+                "launch_time_seconds": round(launch_time, 2)
+            }
+        else:
+            return {
+                "status": "error",
+                "message": f"Failed to start SAP2000, return code: {ret}"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error connecting to SAP2000: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 
 
@@ -1315,52 +1315,52 @@ async def sap_connect():
 
 @app.post("/sap/api")
 async def sap_api(request: ExecuteRequest):
- """Execute SAP2000 API code on persistent instance"""
- global sap2000_state
- if not sap2000_state["is_connected"] or not sap2000_state["instance"]:
-     return {
-         "status": "not_connected",
-         "message": "SAP2000 is not connected. Call /sap/connect first"
-     }
- try:
-     # Update activity timestamp
-     sap2000_state["last_activity"] = datetime.utcnow()
-   
-     # Create execution context with SAP objects
-     exec_globals = {
-         'mySapObject': sap2000_state["instance"],
-         'SapModel': sap2000_state["model"],
-         'ret': None  # Common return variable
-     }
-   
-     # Execute the code in thread to avoid blocking
-     await to_thread(exec, request.code, exec_globals)
-   
-     # Extract any variables that were set
-     results = {}
-     for key, value in exec_globals.items():
-         if key not in ['mySapObject', 'SapModel', '__builtins__']:
-             # Try to make value JSON serializable
-             try:
-                 if hasattr(value, '__iter__') and not isinstance(value, str):
-                     results[key] = list(value)
-                 else:
-                     results[key] = value
-             except:
-                 results[key] = str(value)
-   
-     return {
-         "status": "success",
-         "results": results
-     }
-   
- except Exception as e:
-     logger.error(f"Error executing SAP API: {e}")
-     return {
-         "status": "error",
-         "message": str(e),
-         "traceback": traceback.format_exc()
-     }
+    """Execute SAP2000 API code on persistent instance"""
+    global sap2000_state
+    if not sap2000_state["is_connected"] or not sap2000_state["instance"]:
+        return {
+            "status": "not_connected",
+            "message": "SAP2000 is not connected. Call /sap/connect first"
+        }
+    try:
+        # Update activity timestamp
+        sap2000_state["last_activity"] = datetime.utcnow()
+        
+        # Create execution context with SAP objects
+        exec_globals = {
+            'mySapObject': sap2000_state["instance"],
+            'SapModel': sap2000_state["model"],
+            'ret': None  # Common return variable
+        }
+        
+        # Execute the code in thread to avoid blocking
+        await to_thread(exec, request.code, exec_globals)
+        
+        # Extract any variables that were set
+        results = {}
+        for key, value in exec_globals.items():
+            if key not in ['mySapObject', 'SapModel', '__builtins__']:
+                # Try to make value JSON serializable
+                try:
+                    if hasattr(value, '__iter__') and not isinstance(value, str):
+                        results[key] = list(value)
+                    else:
+                        results[key] = value
+                except:
+                    results[key] = str(value)
+        
+        return {
+            "status": "success",
+            "results": results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error executing SAP API: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 
 
@@ -1371,32 +1371,32 @@ async def sap_api(request: ExecuteRequest):
 
 @app.get("/sap/status")
 async def sap_status():
- """Get SAP2000 connection status"""
- global sap2000_state
- status = {
-     "is_connected": sap2000_state["is_connected"],
-     "has_instance": sap2000_state["instance"] is not None,
-     "model_path": sap2000_state["model_path"],
-     "last_activity": sap2000_state["last_activity"].isoformat() if sap2000_state["last_activity"] else None
- }
- if sap2000_state["is_connected"] and sap2000_state["instance"]:
-     try:
-         # Get additional info in thread to avoid blocking
-         def _get_sap_info():
-             version = sap2000_state["instance"].SapModel.GetVersion()
-             version_str = version[0] if version else "Unknown"
-           
-             # Get current filename
-             filename = sap2000_state["model"].GetModelFilename()
-             return version_str, filename
-       
-         version_str, filename = await to_thread(_get_sap_info)
-         status["version"] = version_str
-         status["current_file"] = filename if filename else None
-       
-     except Exception as e:
-         logger.warning(f"Error getting SAP status details: {e}")
- return status
+    """Get SAP2000 connection status"""
+    global sap2000_state
+    status = {
+        "is_connected": sap2000_state["is_connected"],
+        "has_instance": sap2000_state["instance"] is not None,
+        "model_path": sap2000_state["model_path"],
+        "last_activity": sap2000_state["last_activity"].isoformat() if sap2000_state["last_activity"] else None
+    }
+    if sap2000_state["is_connected"] and sap2000_state["instance"]:
+        try:
+            # Get additional info in thread to avoid blocking
+            def _get_sap_info():
+                version = sap2000_state["instance"].SapModel.GetVersion()
+                version_str = version[0] if version else "Unknown"
+                
+                # Get current filename
+                filename = sap2000_state["model"].GetModelFilename()
+                return version_str, filename
+            
+            version_str, filename = await to_thread(_get_sap_info)
+            status["version"] = version_str
+            status["current_file"] = filename if filename else None
+            
+        except Exception as e:
+            logger.warning(f"Error getting SAP status details: {e}")
+    return status
 
 
 
@@ -1407,43 +1407,43 @@ async def sap_status():
 
 @app.post("/sap/disconnect")
 async def sap_disconnect():
- """Disconnect from SAP2000 and clean up"""
- global sap2000_state
- if not sap2000_state["is_connected"]:
-     return {
-         "status": "not_connected",
-         "message": "SAP2000 is not connected"
-     }
- try:
-     # Close SAP2000
-     if sap2000_state["instance"]:
-         sap2000_state["instance"].ApplicationExit(False)  # False = don't save
-   
-     # Clear state
-     sap2000_state["instance"] = None
-     sap2000_state["model"] = None
-     sap2000_state["is_connected"] = False
-     sap2000_state["model_path"] = None
-     sap2000_state["last_activity"] = None
-   
-     logger.info("SAP2000 disconnected successfully")
-   
-     return {
-         "status": "disconnected",
-         "message": "SAP2000 closed successfully"
-     }
-   
- except Exception as e:
-     logger.error(f"Error disconnecting SAP2000: {e}")
-     # Force clear state even on error
-     sap2000_state["instance"] = None
-     sap2000_state["model"] = None
-     sap2000_state["is_connected"] = False
-   
-     return {
-         "status": "error",
-         "message": str(e)
-     }
+    """Disconnect from SAP2000 and clean up"""
+    global sap2000_state
+    if not sap2000_state["is_connected"]:
+        return {
+            "status": "not_connected",
+            "message": "SAP2000 is not connected"
+        }
+    try:
+        # Close SAP2000
+        if sap2000_state["instance"]:
+            sap2000_state["instance"].ApplicationExit(False)  # False = don't save
+        
+        # Clear state
+        sap2000_state["instance"] = None
+        sap2000_state["model"] = None
+        sap2000_state["is_connected"] = False
+        sap2000_state["model_path"] = None
+        sap2000_state["last_activity"] = None
+        
+        logger.info("SAP2000 disconnected successfully")
+        
+        return {
+            "status": "disconnected",
+            "message": "SAP2000 closed successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error disconnecting SAP2000: {e}")
+        # Force clear state even on error
+        sap2000_state["instance"] = None
+        sap2000_state["model"] = None
+        sap2000_state["is_connected"] = False
+        
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 
 
@@ -1453,39 +1453,21 @@ async def sap_disconnect():
 
 
 if __name__ == "__main__":
- import uvicorn
+    import uvicorn
 
 
 
 
- # Log startup configuration
- logger.info(f"Starting with configuration:")
- logger.info(f"  EXECUTOR_ID: {EXECUTOR_ID}")
- logger.info(f"  NOVA_API_URL: {NOVA_API_URL}")
- logger.info(f"  MATHCAD_WORKING_DIR: {MATHCAD_WORKING_DIR}")
- logger.info(f"  MAX_EXECUTION_TIME: {MAX_EXECUTION_TIME}s")
+    # Log startup configuration
+    logger.info(f"Starting with configuration:")
+    logger.info(f"  EXECUTOR_ID: {EXECUTOR_ID}")
+    logger.info(f"  NOVA_API_URL: {NOVA_API_URL}")
+    logger.info(f"  MATHCAD_WORKING_DIR: {MATHCAD_WORKING_DIR}")
+    logger.info(f"  MAX_EXECUTION_TIME: {MAX_EXECUTION_TIME}s")
 
 
 
 
- uvicorn.run(app, host="0.0.0.0", port=8000)
- # uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/code
