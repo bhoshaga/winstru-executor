@@ -13,7 +13,10 @@ import sys
 import traceback
 import signal
 import getpass
-import psutil  # Add this for Mathcad status checking
+try:
+    import psutil  # Add this for Mathcad status checking
+except ImportError:
+    psutil = None  # Will run without process monitoring on Mac
 
 
 
