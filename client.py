@@ -7,7 +7,7 @@ import tempfile
 import os
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, List
 from contextlib import asynccontextmanager
 import sys
@@ -18,6 +18,12 @@ try:
     import psutil  # Add this for Mathcad status checking
 except ImportError:
     psutil = None  # Will run without process monitoring on Mac
+
+# Fix SSL certificate issues on Windows
+import ssl
+import certifi
+os.environ['SSL_CERT_FILE'] = certifi.where()
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 
 
 
@@ -86,7 +92,7 @@ executor_state = {
      "total_jobs": 0,
      "successful_jobs": 0,
      "failed_jobs": 0,
-     "start_time": datetime.utcnow()
+     "start_time": datetime.now(timezone.utc)
  }
 }
 
@@ -171,128 +177,134 @@ class ExecutorInfo(BaseModel):
 
 
 async def connect_to_nova_bridge():
- """Maintain persistent WebSocket connection to Nova Bridge"""
- uri = f"{NOVA_WS_URL}/nova/bridge/connect?client_type=windows&client_id={EXECUTOR_ID}"
- try:
-     while True:
-         try:
-             logger.info(f"Connecting to Nova Bridge at {uri}")
+    """Maintain persistent WebSocket connection to Nova Bridge"""
+    uri = f"{NOVA_WS_URL}/nova/bridge/connect?client_type=windows&client_id={EXECUTOR_ID}"
+    
+    # Create SSL context that uses certifi certificates
+    ssl_context = ssl.create_default_context()
+    ssl_context.load_verify_locations(certifi.where())
+    
+    try:
+        while True:
+            try:
+                logger.info(f"Connecting to Nova Bridge at {uri}")
 
 
 
 
-             async with websockets.connect(
-                     uri,
-                     ping_interval=20,  # Send ping every 20 seconds
-                     ping_timeout=10,  # Wait 10 seconds for pong
-                     close_timeout=10  # Wait 10 seconds for close
-             ) as websocket:
-                 executor_state["connected"] = True
-                 executor_state["websocket"] = websocket
-               
-                 # Create a lock for this websocket connection to prevent concurrent sends
-                 ws_lock = asyncio.Lock()
+                async with websockets.connect(
+                        uri,
+                        ssl=ssl_context,
+                        ping_interval=20,  # Send ping every 20 seconds
+                        ping_timeout=10,  # Wait 10 seconds for pong
+                        close_timeout=10  # Wait 10 seconds for close
+                ) as websocket:
+                    executor_state["connected"] = True
+                    executor_state["websocket"] = websocket
+                    
+                    # Create a lock for this websocket connection to prevent concurrent sends
+                    ws_lock = asyncio.Lock()
 
 
 
 
-                 # Receive connection confirmation
-                 welcome = await websocket.recv()
-                 logger.info(f"Connected to Nova Bridge: {welcome}")
+                    # Receive connection confirmation
+                    welcome = await websocket.recv()
+                    logger.info(f"Connected to Nova Bridge: {welcome}")
 
 
 
 
-                 # Send ready status
-                 ready_msg = {
-                     "type": "status",
-                     "status": "ready",
-                     "executor_id": EXECUTOR_ID,
-                     "capabilities": {
-                         "max_execution_time": MAX_EXECUTION_TIME,
-                         "python_version": sys.version,
-                         "platform": sys.platform
-                     }
-                 }
-                 async with ws_lock:
-                     await websocket.send(json.dumps(ready_msg))
-                 logger.info(f"Sent ready status: {ready_msg['status']}")
+                    # Send ready status
+                    ready_msg = {
+                        "type": "status",
+                        "status": "ready",
+                        "executor_id": EXECUTOR_ID,
+                        "capabilities": {
+                            "max_execution_time": MAX_EXECUTION_TIME,
+                            "python_version": sys.version,
+                            "platform": sys.platform
+                        }
+                    }
+                    async with ws_lock:
+                        await websocket.send(json.dumps(ready_msg))
+                    logger.info(f"Sent ready status: {ready_msg['status']}")
 
 
 
 
-                 # Listen for execution requests
-                 while True:
-                     try:
-                         message = await websocket.recv()
-                         logger.debug(f"Received raw message: {message[:500]}...")  # Log first 500 chars
-                         data = json.loads(message)
-                         logger.info(f"Received message type: {data.get('type')} for job: {data.get('job_id', 'N/A')}")
+                    # Listen for execution requests
+                    while True:
+                        try:
+                            message = await websocket.recv()
+                            logger.debug(f"Received raw message: {message[:500]}...")  # Log first 500 chars
+                            data = json.loads(message)
+                            logger.info(f"Received message type: {data.get('type')} for job: {data.get('job_id', 'N/A')}")
 
 
 
 
-                         if data["type"] == "execute":
-                             logger.info(f"Processing execution request for job {data['job_id']}")
-                             logger.debug(f"Code length: {len(data.get('code', ''))} chars")
-                             logger.debug(f"Files included: {[f['name'] for f in data.get('files', [])]}")
-                             # Handle execution in background
-                             asyncio.create_task(execute_job(websocket, data, ws_lock))
-                         elif data["type"] == "ping":
-                             logger.debug("Received ping, sending pong")
-                             async with ws_lock:
-                                 await websocket.send(json.dumps({
-                                     "type": "pong",
-                                     "executor_id": EXECUTOR_ID
-                                 }))
-                         elif data["type"] == "mathcad_status":
-                             logger.info("Received Mathcad status request")
-                             force_refresh = data.get("force_refresh", False)
-                             # Handle status request asynchronously
-                             asyncio.create_task(handle_mathcad_status_request(websocket, force_refresh, ws_lock))
-                         elif data["type"] == "shutdown":
-                             logger.warning("Received shutdown command from Mac")
-                             async with ws_lock:
-                                 await websocket.send(json.dumps({
-                                     "type": "shutdown_acknowledged",
-                                     "executor_id": EXECUTOR_ID,
-                                     "message": "Shutting down Nova executor"
-                                 }))
-                             # Close websocket and trigger shutdown
-                             await websocket.close()
-                             logger.info("Initiating graceful shutdown...")
-                             # Use sys.exit for clean shutdown on Windows
-                             sys.exit(0)
+                            if data["type"] == "execute":
+                                logger.info(f"Processing execution request for job {data['job_id']}")
+                                logger.debug(f"Code length: {len(data.get('code', ''))} chars")
+                                logger.debug(f"Files included: {[f['name'] for f in data.get('files', [])]}")
+                                # Handle execution in background
+                                asyncio.create_task(execute_job(websocket, data, ws_lock))
+                            elif data["type"] == "ping":
+                                logger.debug("Received ping, sending pong")
+                                async with ws_lock:
+                                    await websocket.send(json.dumps({
+                                        "type": "pong",
+                                        "executor_id": EXECUTOR_ID
+                                    }))
+                            elif data["type"] == "mathcad_status":
+                                logger.info("Received Mathcad status request")
+                                force_refresh = data.get("force_refresh", False)
+                                # Handle status request asynchronously
+                                asyncio.create_task(handle_mathcad_status_request(websocket, force_refresh, ws_lock))
+                            elif data["type"] == "shutdown":
+                                logger.warning("Received shutdown command from Mac")
+                                async with ws_lock:
+                                    await websocket.send(json.dumps({
+                                        "type": "shutdown_acknowledged",
+                                        "executor_id": EXECUTOR_ID,
+                                        "message": "Shutting down Nova executor"
+                                    }))
+                                # Close websocket and trigger shutdown
+                                await websocket.close()
+                                logger.info("Initiating graceful shutdown...")
+                                # Use sys.exit for clean shutdown on Windows
+                                sys.exit(0)
 
 
 
 
-                     except websockets.exceptions.ConnectionClosed:
-                         logger.warning("WebSocket connection closed")
-                         break
-                     except Exception as e:
-                         logger.error(f"Error handling message: {e}")
+                        except websockets.exceptions.ConnectionClosed:
+                            logger.warning("WebSocket connection closed")
+                            break
+                        except Exception as e:
+                            logger.error(f"Error handling message: {e}")
 
 
 
 
-         except Exception as e:
-             logger.error(f"Connection error: {e}")
-         finally:
-             # Always clear the connection state when websocket closes
-             executor_state["connected"] = False
-             executor_state["websocket"] = None
-             logger.info("WebSocket connection cleaned up")
+            except Exception as e:
+                logger.error(f"Connection error: {e}")
+            finally:
+                # Always clear the connection state when websocket closes
+                executor_state["connected"] = False
+                executor_state["websocket"] = None
+                logger.info("WebSocket connection cleaned up")
 
 
 
 
-         # Wait before reconnecting
-         await asyncio.sleep(5)
-         logger.info("Reconnecting to Nova Bridge...")
- except asyncio.CancelledError:
-     logger.info("WebSocket connection task cancelled - shutting down gracefully")
-     return
+            # Wait before reconnecting
+            await asyncio.sleep(5)
+            logger.info("Reconnecting to Nova Bridge...")
+    except asyncio.CancelledError:
+        logger.info("WebSocket connection task cancelled - shutting down gracefully")
+        return
 
 
 
@@ -320,7 +332,7 @@ async def execute_job(websocket, job_data, ws_lock):
  # Track job
  executor_state["current_jobs"][job_id] = {
      "status": "running",
-     "started_at": datetime.utcnow()
+     "started_at": datetime.now(timezone.utc)
  }
  executor_state["stats"]["total_jobs"] += 1
 
@@ -341,7 +353,7 @@ async def execute_job(websocket, job_data, ws_lock):
 
  try:
      logger.info(f"Executing Python code for job {job_id}")
-     start_time = datetime.utcnow()
+     start_time = datetime.now(timezone.utc)
 
 
 
@@ -390,7 +402,7 @@ async def execute_job(websocket, job_data, ws_lock):
 
 
 
-         execution_time = (datetime.utcnow() - start_time).total_seconds()
+         execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
 
 
 
@@ -497,7 +509,7 @@ async def execute_job(websocket, job_data, ws_lock):
  if job_id in executor_state["current_jobs"]:
      executor_state["current_jobs"][job_id].update({
          "status": response["status"],
-         "completed_at": datetime.utcnow(),
+         "completed_at": datetime.now(timezone.utc),
          "result": response.get("result", {})
      })
 
@@ -595,7 +607,7 @@ async def root():
      "executor_id": EXECUTOR_ID,
      "status": "online",
      "connected_to_bridge": executor_state["connected"],
-     "uptime": (datetime.utcnow() - executor_state["stats"]["start_time"]).total_seconds()
+     "uptime": (datetime.now(timezone.utc) - executor_state["stats"]["start_time"]).total_seconds()
  }
 
 
@@ -780,7 +792,7 @@ async def get_stats():
  """Get executor statistics"""
  stats = executor_state["stats"].copy()
  stats["current_jobs"] = len(executor_state["current_jobs"])
- stats["uptime_seconds"] = (datetime.utcnow() - stats["start_time"]).total_seconds()
+ stats["uptime_seconds"] = (datetime.now(timezone.utc) - stats["start_time"]).total_seconds()
  return stats
 
 
@@ -1129,7 +1141,7 @@ async def update_mathcad_status_cache():
 
          # Update cache atomically
          mathcad_status_cache["status"] = status
-         mathcad_status_cache["timestamp"] = datetime.utcnow()
+         mathcad_status_cache["timestamp"] = datetime.now(timezone.utc)
 
 
 
@@ -1156,7 +1168,7 @@ async def handle_mathcad_status_request(websocket, force_refresh=False, ws_lock=
  # Check if cache is valid
  cache_valid = False
  if mathcad_status_cache["status"] and mathcad_status_cache["timestamp"]:
-     age = (datetime.utcnow() - mathcad_status_cache["timestamp"]).total_seconds()
+     age = (datetime.now(timezone.utc) - mathcad_status_cache["timestamp"]).total_seconds()
      cache_valid = age < mathcad_status_cache["cache_duration"]
 
 
@@ -1166,7 +1178,7 @@ async def handle_mathcad_status_request(websocket, force_refresh=False, ws_lock=
  if cache_valid and not force_refresh:
      logger.info("Returning cached Mathcad status")
      status = mathcad_status_cache["status"]
-     cache_age = (datetime.utcnow() - mathcad_status_cache["timestamp"]).total_seconds()
+     cache_age = (datetime.now(timezone.utc) - mathcad_status_cache["timestamp"]).total_seconds()
  else:
      logger.info(f"Refreshing Mathcad status (force_refresh={force_refresh})")
      await update_mathcad_status_cache()
@@ -1182,7 +1194,7 @@ async def handle_mathcad_status_request(websocket, force_refresh=False, ws_lock=
      "status": status,
      "cache_age": round(cache_age, 1),
      "from_cache": cache_valid and not force_refresh,
-     "timestamp": datetime.utcnow().isoformat()
+     "timestamp": datetime.now(timezone.utc).isoformat()
  }
 
 
@@ -1254,7 +1266,7 @@ async def sap_connect():
         }
     try:
         logger.info("Connecting to SAP2000...")
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         # Run COM operations in thread
         def _connect_sap():
@@ -1286,10 +1298,10 @@ async def sap_connect():
             sap2000_state["instance"] = sap_object
             sap2000_state["model"] = sap_model
             sap2000_state["is_connected"] = True
-            sap2000_state["last_activity"] = datetime.utcnow()
+            sap2000_state["last_activity"] = datetime.now(timezone.utc)
             
             # Calculate launch time
-            launch_time = (datetime.utcnow() - start_time).total_seconds()
+            launch_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             logger.info(f"SAP2000 connected successfully in {launch_time:.2f} seconds")
             
             return {
@@ -1328,7 +1340,7 @@ async def sap_api(request: ExecuteRequest):
         }
     try:
         # Update activity timestamp
-        sap2000_state["last_activity"] = datetime.utcnow()
+        sap2000_state["last_activity"] = datetime.now(timezone.utc)
         
         # Create execution context with SAP objects
         exec_globals = {
