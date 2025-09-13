@@ -133,21 +133,12 @@ def main():
             print(f"✗ Failed to install dependencies: {e}")
             print("You may need to run: pip install -r requirements.txt manually")
 
-    # Start the client
+    # Done - user will run client.py manually
     print("\n" + "=" * 60)
-    print("Starting Nova Executor Client...")
-    print("=" * 60 + "\n")
-
-    python_exe = get_python_executable()
-
-    try:
-        # Run client.py using the same Python interpreter
-        subprocess.run([python_exe, "client.py"])
-    except KeyboardInterrupt:
-        print("\n\nClient stopped by user")
-    except Exception as e:
-        print(f"\n✗ Failed to start client: {e}")
-        sys.exit(1)
+    print("✓ Setup complete!")
+    print("To start the Nova Executor Client, run:")
+    print(f"  python client.py")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
