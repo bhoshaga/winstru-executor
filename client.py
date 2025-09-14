@@ -70,6 +70,7 @@ EXECUTOR_ID = os.getenv("NOVA_EXECUTOR_ID", f"windows_{uuid.uuid4().hex[:8]}")
 NOVA_API_URL = os.getenv("NOVA_API_URL", "https://api.stru.ai")
 NOVA_WS_URL = NOVA_API_URL.replace("https://", "wss://").replace("http://", "ws://")
 MAX_EXECUTION_TIME = int(os.getenv("NOVA_MAX_EXECUTION_TIME", "60"))
+MATHCAD_MONITORING_ENABLED = os.getenv("MATHCAD_MONITORING_ENABLED", "false").lower() == "true"
 
 
 
@@ -258,10 +259,20 @@ async def connect_to_nova_bridge():
                                         "executor_id": EXECUTOR_ID
                                     }))
                             elif data["type"] == "mathcad_status":
-                                logger.info("Received Mathcad status request")
-                                force_refresh = data.get("force_refresh", False)
-                                # Handle status request asynchronously
-                                asyncio.create_task(handle_mathcad_status_request(websocket, force_refresh, ws_lock))
+                                if MATHCAD_MONITORING_ENABLED:
+                                    logger.info("Received Mathcad status request")
+                                    force_refresh = data.get("force_refresh", False)
+                                    # Handle status request asynchronously
+                                    asyncio.create_task(handle_mathcad_status_request(websocket, force_refresh, ws_lock))
+                                else:
+                                    logger.debug("Mathcad status request received but monitoring is disabled")
+                                    # Send empty response indicating monitoring is disabled
+                                    async with ws_lock:
+                                        await websocket.send(json.dumps({
+                                            "type": "mathcad_status_result",
+                                            "status": {"is_running": False, "monitoring_disabled": True},
+                                            "message": "Mathcad monitoring is disabled"
+                                        }))
                             elif data["type"] == "shutdown":
                                 logger.warning("Received shutdown command from Mac")
                                 async with ws_lock:
@@ -536,8 +547,12 @@ async def execute_job(websocket, job_data, ws_lock):
 
 
 
- # Update Mathcad status cache after job execution (non-blocking)
- asyncio.create_task(update_mathcad_status_cache())
+ # Only update Mathcad status if monitoring is enabled AND code mentions mathcad/sap
+ if MATHCAD_MONITORING_ENABLED:
+     code_lower = code.lower()
+     if 'mathcad' in code_lower or 'mcdx' in code_lower or 'sap2000' in code_lower:
+         logger.debug("Mathcad/SAP-related code detected, updating status cache")
+         asyncio.create_task(update_mathcad_status_cache())
 
 
 
@@ -561,8 +576,12 @@ async def lifespan(app: FastAPI):
 
 
 
- # Start background Mathcad status monitoring (every 2 minutes)
- asyncio.create_task(background_mathcad_monitor())
+ # Start background Mathcad status monitoring (every 5 minutes) if enabled
+ if MATHCAD_MONITORING_ENABLED:
+     asyncio.create_task(background_mathcad_monitor())
+     logger.info("Mathcad monitoring is ENABLED")
+ else:
+     logger.info("Mathcad monitoring is DISABLED (set MATHCAD_MONITORING_ENABLED=true to enable)")
 
 
 
