@@ -11,4 +11,5 @@ pydantic==2.5.0
 aiofiles==23.2.1
 psutil>=5.9.0
 certifi>=2023.0.0
+pywin32>=306; sys_platform == 'win32'  # Windows-only, for Windows API access
 comtypes>=1.2.0  # Windows-only, for SAP2000 COM automation
