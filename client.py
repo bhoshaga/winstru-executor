@@ -87,8 +87,10 @@ async def handle_message(websocket, message):
             # Include original timestamp for latency calculation
             pong_msg["timestamp"] = timestamp
             try:
-                sent_time = datetime.fromisoformat(timestamp)
-                latency_ms = (datetime.utcnow() - sent_time).total_seconds() * 1000
+                from datetime import timezone
+                sent_time = datetime.fromisoformat(timestamp).replace(tzinfo=timezone.utc)
+                current_time = datetime.now(timezone.utc)
+                latency_ms = (current_time - sent_time).total_seconds() * 1000
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Received ping, latency: {latency_ms:.0f}ms")
             except:
                 pass
