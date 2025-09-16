@@ -8,7 +8,7 @@ Only connects, executes code, and returns results.
 import asyncio
 import websockets
 import json
-import subprocess
+# subprocess import removed - using asyncio.subprocess instead
 import sys
 import uuid
 from datetime import datetime
@@ -22,27 +22,42 @@ HEARTBEAT_TIMEOUT = 60  # seconds to wait for ping from server
 
 
 async def execute_code(code, timeout=MAX_TIMEOUT):
-    """Execute Python code using subprocess and return results."""
+    """Execute Python code using async subprocess for non-blocking execution."""
     try:
-        # Run code in subprocess
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=timeout
+        # Create async subprocess
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", code,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
 
-        return {
-            "status": "completed" if result.returncode == 0 else "failed",
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "return_code": result.returncode
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "timeout",
-            "error": f"Execution timeout ({timeout}s)"
-        }
+        # Wait for completion with timeout
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout
+            )
+
+            # Decode bytes to string
+            stdout_str = stdout.decode('utf-8') if stdout else ''
+            stderr_str = stderr.decode('utf-8') if stderr else ''
+
+            return {
+                "status": "completed" if process.returncode == 0 else "failed",
+                "stdout": stdout_str,
+                "stderr": stderr_str,
+                "return_code": process.returncode
+            }
+
+        except asyncio.TimeoutError:
+            # Kill the process if it times out
+            process.kill()
+            await process.wait()  # Clean up the process
+            return {
+                "status": "timeout",
+                "error": f"Execution timeout ({timeout}s)"
+            }
+
     except Exception as e:
         return {
             "status": "error",
