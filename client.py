@@ -249,7 +249,8 @@ async def connect_to_nova_bridge():
                     # Listen for execution requests
                     while True:
                         try:
-                            message = await websocket.recv()
+                            # Add timeout to recv() so we're not blocked forever
+                            message = await asyncio.wait_for(websocket.recv(), timeout=30.0)
                             message_count += 1
                             last_message_time = datetime.now(timezone.utc)
                             logger.info(f">>> SERVER MESSAGE #{message_count} RECEIVED <<<")
@@ -295,6 +296,10 @@ async def connect_to_nova_bridge():
 
 
 
+                        except asyncio.TimeoutError:
+                            # Timeout is expected - just means no message in 30s
+                            logger.debug("No message from server in 30s (normal during idle)")
+                            continue
                         except websockets.exceptions.ConnectionClosed:
                             logger.warning("WebSocket connection closed")
                             break
