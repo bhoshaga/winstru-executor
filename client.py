@@ -251,7 +251,7 @@ async def connect_to_nova_bridge():
                                 # Handle execution in background
                                 asyncio.create_task(execute_job(websocket, data, ws_lock))
                             elif data["type"] == "ping":
-                                logger.debug("Received ping, sending pong")
+                                logger.info("Received ping, sending pong - connection alive")
                                 async with ws_lock:
                                     await websocket.send(json.dumps({
                                         "type": "pong",
