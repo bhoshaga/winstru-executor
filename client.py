@@ -233,10 +233,26 @@ async def connect_to_nova_bridge():
 
 
 
+                    # Start periodic connection status logger with message counter
+                    message_count = 0
+                    last_message_time = datetime.now(timezone.utc)
+
+                    async def log_connection_status():
+                        nonlocal message_count, last_message_time
+                        while True:
+                            await asyncio.sleep(20)
+                            time_since_last = (datetime.now(timezone.utc) - last_message_time).total_seconds()
+                            logger.info(f"Connection check: WebSocket={'OPEN' if websocket.open else 'CLOSED'}, Messages received: {message_count}, Last message: {time_since_last:.1f}s ago")
+
+                    asyncio.create_task(log_connection_status())
+
                     # Listen for execution requests
                     while True:
                         try:
                             message = await websocket.recv()
+                            message_count += 1
+                            last_message_time = datetime.now(timezone.utc)
+                            logger.info(f">>> SERVER MESSAGE #{message_count} RECEIVED <<<")
                             logger.debug(f"Received raw message: {message[:500]}...")  # Log first 500 chars
                             data = json.loads(message)
                             logger.info(f"Received message type: {data.get('type')} for job: {data.get('job_id', 'N/A')}")
