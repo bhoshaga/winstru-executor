@@ -234,6 +234,7 @@ async def connect_to_nova_bridge():
 
 
                     # Start periodic connection status logger with message counter
+                    logger.info("DEBUG - Should see connection status every 20s regardless of server activity")
                     message_count = 0
                     last_message_time = datetime.now(timezone.utc)
 
