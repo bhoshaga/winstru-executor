@@ -17,7 +17,7 @@ import time
 # Configuration
 EXECUTOR_ID = f"windows_lite_{uuid.uuid4().hex[:8]}"  # Must start with "windows_" to be recognized as executor
 NOVA_WS_URL = "wss://api.stru.ai"
-MAX_TIMEOUT = 30  # seconds for code execution
+MAX_TIMEOUT = 300  # seconds for code execution (5 minutes)
 HEARTBEAT_TIMEOUT = 60  # seconds to wait for ping from server
 
 
