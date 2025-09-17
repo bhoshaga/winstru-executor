@@ -65,6 +65,25 @@ async def execute_code(code, timeout=MAX_TIMEOUT):
         }
 
 
+async def handle_job_execution(websocket, job_id, code):
+    """Execute a job asynchronously and send result back."""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Executing job {job_id}")
+
+    # Execute the code
+    result = await execute_code(code)
+
+    # Send result back
+    response = {
+        "type": "result",
+        "job_id": job_id,
+        "status": result["status"],
+        "executor_id": EXECUTOR_ID,
+        "result": result
+    }
+
+    await websocket.send(json.dumps(response))
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Job {job_id} {result['status']}")
+
 async def handle_message(websocket, message):
     """Handle incoming message and send response if needed."""
     msg_type = message.get("type")
@@ -73,22 +92,8 @@ async def handle_message(websocket, message):
         job_id = message.get("job_id")
         code = message.get("code", "")
 
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Executing job {job_id}")
-
-        # Execute the code
-        result = await execute_code(code)
-
-        # Send result back
-        response = {
-            "type": "result",
-            "job_id": job_id,
-            "status": result["status"],
-            "executor_id": EXECUTOR_ID,
-            "result": result
-        }
-
-        await websocket.send(json.dumps(response))
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Job {job_id} {result['status']}")
+        # Spawn job execution as a separate task (non-blocking)
+        asyncio.create_task(handle_job_execution(websocket, job_id, code))
 
     elif msg_type == "ping":
         # Respond to application-level ping with latency calculation
