@@ -288,12 +288,16 @@ class SAP2000Manager:
     # Private helper methods
     def _connect_sap(self) -> tuple:
         """Internal: Perform COM connection in thread"""
-        # Import comtypes
-        import comtypes.client
+        # Import and initialize COM for this thread
+        import pythoncom
+        pythoncom.CoInitialize()
 
-        # Create API helper object
-        helper = comtypes.client.CreateObject('SAP2000v1.Helper')
-        helper = helper.QueryInterface(comtypes.gen.SAP2000v1.cHelper)
+        try:
+            import comtypes.client
+
+            # Create API helper object
+            helper = comtypes.client.CreateObject('SAP2000v1.Helper')
+            helper = helper.QueryInterface(comtypes.gen.SAP2000v1.cHelper)
 
         # Create SAP2000 instance
         sap_object = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
@@ -301,15 +305,25 @@ class SAP2000Manager:
         # Start SAP2000 application
         ret = sap_object.ApplicationStart()
 
-        if ret == 0:
-            # Make visible
-            sap_object.Visible = True
-            return sap_object, sap_object.SapModel, ret
-        else:
-            return None, None, ret
+            if ret == 0:
+                # Make visible
+                sap_object.Visible = True
+                # Important: Do NOT call CoUninitialize here!
+                # We need COM to stay initialized for the objects to remain valid
+                return sap_object, sap_object.SapModel, ret
+            else:
+                return None, None, ret
+        except Exception as e:
+            # Only uninitialize on error
+            pythoncom.CoUninitialize()
+            raise
 
     def _execute_code(self, code: str) -> Dict[str, Any]:
         """Internal: Execute code with SAP objects in context"""
+        # Initialize COM for this thread
+        import pythoncom
+        pythoncom.CoInitialize()
+
         # Create execution context with SAP objects
         exec_globals = {
             'mySapObject': self.instance,
@@ -337,6 +351,10 @@ class SAP2000Manager:
 
     def _get_model_info(self) -> tuple:
         """Internal: Get version and filename from model"""
+        # Initialize COM for this thread
+        import pythoncom
+        pythoncom.CoInitialize()
+
         version = self.instance.SapModel.GetVersion()
         version_str = version[0] if version else "Unknown"
 
