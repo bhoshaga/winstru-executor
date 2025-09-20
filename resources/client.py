@@ -13,12 +13,16 @@ import sys
 import uuid
 from datetime import datetime
 import time
+from sap_class import SAP2000Manager
 
 # Configuration
 EXECUTOR_ID = f"windows_lite_{uuid.uuid4().hex[:8]}"  # Must start with "windows_" to be recognized as executor
 NOVA_WS_URL = "wss://api.stru.ai"
 MAX_TIMEOUT = 300  # seconds for code execution (5 minutes)
 HEARTBEAT_TIMEOUT = 60  # seconds to wait for ping from server
+
+# Initialize SAP2000 manager
+sap_manager = SAP2000Manager()
 
 
 async def execute_code(code, timeout=MAX_TIMEOUT):
@@ -120,6 +124,103 @@ async def handle_message(websocket, message):
 
     elif msg_type == "connected":
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {message.get('message', 'Connected')}")
+
+    # SAP2000 message handlers
+    elif msg_type == "sap_connect":
+        job_id = message.get("job_id")
+        timeout = message.get("timeout", 30)
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 connect request (job {job_id})")
+        result = await sap_manager.connect(timeout)
+
+        response = {
+            "type": "result",
+            "job_id": job_id,
+            "executor_id": EXECUTOR_ID,
+            "result": result  # Keep SAP response as-is
+        }
+        await websocket.send(json.dumps(response))
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 connect: {result['status']}")
+
+    elif msg_type == "sap_execute":
+        job_id = message.get("job_id")
+        code = message.get("code", "")
+        timeout = message.get("timeout", 60)
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 execute (job {job_id}): {code[:50]}...")
+        result = await sap_manager.execute(code, timeout)
+
+        response = {
+            "type": "result",
+            "job_id": job_id,
+            "executor_id": EXECUTOR_ID,
+            "result": result  # Keep SAP response as-is
+        }
+        await websocket.send(json.dumps(response))
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 execute: {result['status']}")
+
+    elif msg_type == "sap_status":
+        job_id = message.get("job_id")
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 status request (job {job_id})")
+        result = await sap_manager.get_status()
+
+        response = {
+            "type": "result",
+            "job_id": job_id,
+            "executor_id": EXECUTOR_ID,
+            "result": result  # Keep SAP response as-is
+        }
+        await websocket.send(json.dumps(response))
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 status sent")
+
+    elif msg_type == "sap_disconnect":
+        job_id = message.get("job_id")
+        save = message.get("save", False)
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 disconnect request (job {job_id})")
+        result = await sap_manager.disconnect(save)
+
+        response = {
+            "type": "result",
+            "job_id": job_id,
+            "executor_id": EXECUTOR_ID,
+            "result": result  # Keep SAP response as-is
+        }
+        await websocket.send(json.dumps(response))
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 disconnect: {result['status']}")
+
+    elif msg_type == "sap_open_file":
+        job_id = message.get("job_id")
+        file_path = message.get("file_path")
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 open file (job {job_id}): {file_path}")
+        result = await sap_manager.open_file(file_path)
+
+        response = {
+            "type": "result",
+            "job_id": job_id,
+            "executor_id": EXECUTOR_ID,
+            "result": result  # Keep SAP response as-is
+        }
+        await websocket.send(json.dumps(response))
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 open file: {result['status']}")
+
+    elif msg_type == "sap_save_file":
+        job_id = message.get("job_id")
+        file_path = message.get("file_path", None)
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 save file (job {job_id})")
+        result = await sap_manager.save_file(file_path)
+
+        response = {
+            "type": "result",
+            "job_id": job_id,
+            "executor_id": EXECUTOR_ID,
+            "result": result  # Keep SAP response as-is
+        }
+        await websocket.send(json.dumps(response))
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 save file: {result['status']}")
 
     else:
         # Ignore other message types
