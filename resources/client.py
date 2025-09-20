@@ -13,7 +13,12 @@ import sys
 import uuid
 from datetime import datetime
 import time
-from sap_class import SAP2000Manager
+try:
+    from sap_class import SAP2000Manager
+    SAP_AVAILABLE = True
+except ImportError as e:
+    print(f"[WARNING] SAP2000 support not available: {e}")
+    SAP_AVAILABLE = False
 
 # Configuration
 EXECUTOR_ID = f"windows_lite_{uuid.uuid4().hex[:8]}"  # Must start with "windows_" to be recognized as executor
@@ -21,8 +26,13 @@ NOVA_WS_URL = "wss://api.stru.ai"
 MAX_TIMEOUT = 300  # seconds for code execution (5 minutes)
 HEARTBEAT_TIMEOUT = 60  # seconds to wait for ping from server
 
-# Initialize SAP2000 manager
-sap_manager = SAP2000Manager()
+# Initialize SAP2000 manager if available
+if SAP_AVAILABLE:
+    sap_manager = SAP2000Manager()
+    print(f"[INFO] SAP2000 support initialized")
+else:
+    sap_manager = None
+    print(f"[WARNING] SAP2000 support disabled (missing dependencies)")
 
 
 async def execute_code(code, timeout=MAX_TIMEOUT):
@@ -140,7 +150,14 @@ async def handle_message(websocket, message):
             "result": result  # Keep SAP response as-is
         }
         await websocket.send(json.dumps(response))
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 connect: {result['status']}")
+
+        # Log more details on error
+        if result['status'] == 'error':
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 connect ERROR: {result.get('message', 'Unknown error')}")
+            if 'traceback' in result:
+                print(f"Traceback snippet: {result['traceback'][:300]}")
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] SAP2000 connect: {result['status']}")
 
     elif msg_type == "sap_execute":
         job_id = message.get("job_id")
