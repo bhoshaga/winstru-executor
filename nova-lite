@@ -1,0 +1,495 @@
+#!/usr/bin/env python3
+"""
+nova-lite - Simple CLI to test Nova Bridge execution
+"""
+
+import asyncio
+import websockets
+import json
+import sys
+import uuid
+import argparse
+import requests
+# Redis no longer needed - all operations via WebSocket
+import os
+import time
+import socket
+import subprocess
+from datetime import datetime
+import random
+
+# Daemon configuration
+DAEMON_HOST = '127.0.0.1'
+DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nova_daemon.py')
+PORT_FILE = os.path.expanduser('~/.nova-daemon-port.txt')
+
+def get_daemon_port():
+    """Get daemon port from file or generate new one"""
+    try:
+        if os.path.exists(PORT_FILE):
+            with open(PORT_FILE, 'r') as f:
+                port = int(f.read().strip())
+                # Check if daemon is actually running on this port
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                sock.connect((DAEMON_HOST, port))
+                sock.close()
+                return port
+    except:
+        pass
+
+    # Generate new random port
+    port = random.randint(61234, 61334)
+    return port
+
+def check_daemon(port):
+    """Check if daemon is running on given port"""
+    try:
+        # Try to connect to TCP socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)  # Quick timeout for checking
+        sock.connect((DAEMON_HOST, port))
+        sock.close()
+        return True
+    except:
+        return False
+
+def start_daemon(port):
+    """Start the daemon in background"""
+    print(f"Starting Nova daemon on port {port}...")
+    # Start daemon as background process with the port
+    subprocess.Popen(
+        [sys.executable, DAEMON_SCRIPT, str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True
+    )
+    # Give it time to start
+    time.sleep(0.5)
+
+async def send_code_via_daemon(code, executor_id=None, timeout=30):
+    """Send code through daemon"""
+    job_id = f"test_{uuid.uuid4().hex[:8]}"
+
+    # Get or assign daemon port
+    port = get_daemon_port()
+
+    # Ensure daemon is running
+    if not check_daemon(port):
+        start_daemon(port)
+        # Try a few times to connect
+        for _ in range(5):
+            if check_daemon(port):
+                break
+            time.sleep(0.5)
+        else:
+            print("Failed to start daemon")
+            return
+
+    # Connect to daemon via TCP
+    reader, writer = await asyncio.open_connection(DAEMON_HOST, port)
+
+    # Send request
+    request = {
+        'job_id': job_id,
+        'code': code,
+        'timeout': timeout
+    }
+    if executor_id:
+        request['executor_id'] = executor_id
+
+    writer.write(json.dumps(request).encode())
+    await writer.drain()
+
+    # Get response
+    data = await reader.read(65536)
+    response = json.loads(data.decode())
+
+    writer.close()
+    await writer.wait_closed()
+
+    return job_id, response
+
+async def send_message(message_json, executor_id, timeout=30):
+    """Send custom message to executor via daemon"""
+
+    if executor_id:
+        print(f"Targeting executor: {executor_id}")
+    if timeout != 30:
+        print(f"Using timeout: {timeout}s")
+
+    try:
+        # Parse the JSON message
+        import json
+        message = json.loads(message_json)
+
+        # Generate job_id if not provided
+        if 'job_id' not in message:
+            message['job_id'] = f"msg_{uuid.uuid4().hex[:8]}"
+
+        job_id = message['job_id']
+
+        # Send via daemon
+        response = await send_request_via_daemon('message',
+                                                  job_id=job_id,
+                                                  message=message,
+                                                  executor_id=executor_id,
+                                                  timeout=timeout)
+
+        if response and response.get('status') == 'success':
+            result_data = response.get('result', {})
+            print(f"Sent message {job_id}")
+
+            # Display result
+            print("\nResult:")
+            result = result_data.get("result", {})
+            if result.get("stdout"):
+                print("STDOUT:", result["stdout"])
+            if result.get("stderr"):
+                print("STDERR:", result["stderr"])
+            if result.get("response"):
+                print("RESPONSE:", json.dumps(result["response"], indent=2))
+            print("Status:", result_data.get("status"))
+
+        elif response and response.get('status') == 'job_timeout':
+            print(f"\nJob still running after {response.get('timeout', timeout)} seconds")
+            print(f"Use: ./nova-lite result {job_id}")
+
+        elif response and response.get('status') == 'timeout':
+            print(f"\nTimeout waiting for response from server")
+            print(f"Job may still be running. Use: ./nova-lite result {job_id}")
+
+        elif response and response.get('status') == 'error':
+            print(f"Error: {response.get('error', 'Unknown error')}")
+
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON message - {e}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+async def send_code(code, executor_id=None, timeout=30):
+    """Send code to execute via daemon"""
+
+    if executor_id:
+        print(f"Targeting executor: {executor_id}")
+    if timeout != 30:
+        print(f"Using timeout: {timeout}s")
+
+    try:
+        job_id, response = await send_code_via_daemon(code, executor_id, timeout)
+
+        if response['status'] == 'success':
+            result_data = response['result']
+            print(f"Sent job {job_id}")
+
+            # Display result
+            print("\nResult:")
+            result = result_data.get("result", {})
+            if result.get("stdout"):
+                print("STDOUT:", result["stdout"])
+            if result.get("stderr"):
+                print("STDERR:", result["stderr"])
+            print("Status:", result_data.get("status"))
+
+        elif response['status'] == 'job_timeout':
+            print(f"\nJob still running after {response.get('timeout', timeout)} seconds")
+            print(f"Use: ./nova-lite result {job_id}")
+
+        elif response['status'] == 'timeout':
+            print(f"\nTimeout waiting for response from server")
+            print(f"Job may still be running. Use: ./nova-lite result {job_id}")
+
+        elif response['status'] == 'error':
+            print(f"Error: {response.get('error', 'Unknown error')}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+async def send_request_via_daemon(request_type, **kwargs):
+    """Send any request type through daemon WebSocket"""
+    # Get or assign daemon port
+    port = get_daemon_port()
+
+    # Ensure daemon is running
+    if not check_daemon(port):
+        start_daemon(port)
+        for _ in range(5):
+            if check_daemon(port):
+                break
+            time.sleep(0.5)
+        else:
+            print("Failed to start daemon")
+            return None
+
+    # Connect to daemon
+    reader, writer = await asyncio.open_connection(DAEMON_HOST, port)
+
+    # Build request
+    request = {'type': request_type}
+    request.update(kwargs)
+
+    writer.write(json.dumps(request).encode())
+    await writer.drain()
+
+    # Get response
+    data = await reader.read(65536)
+    response = json.loads(data.decode())
+
+    writer.close()
+    await writer.wait_closed()
+
+    return response
+
+
+async def list_executors():
+    """List all available executors via WebSocket"""
+    try:
+        response = await send_request_via_daemon('list_executors')
+
+        if response and response.get('status') == 'success':
+            executors = response.get('executors', [])
+
+            print("\nAvailable Executors:")
+            print("-" * 60)
+
+            if executors:
+                for executor in executors:
+                    connected = executor.get('connected', False)
+                    status = "🟢" if connected else "🔴"
+                    executor_id = executor.get('id', 'unknown')
+                    last_seen = executor.get('last_seen', 'Never')
+
+                    print(f"{status} {executor_id}")
+                    print(f"   Last seen: {last_seen}")
+            else:
+                print("No executors found")
+
+            print("-" * 60)
+        else:
+            print(f"Error: {response.get('error', 'Failed to fetch executors')}")
+
+    except Exception as e:
+        print(f"Error fetching executors: {e}")
+
+
+
+async def list_jobs():
+    """List all pending jobs via WebSocket"""
+    try:
+        response = await send_request_via_daemon('list_jobs')
+
+        if response and response.get('status') == 'success':
+            jobs = response.get('jobs', [])
+
+            print("\nPending Jobs:")
+            print("-" * 60)
+
+            if jobs:
+                for job in jobs:
+                    print(f"Job ID: {job['job_id']}")
+                    print(f"  Type: {job.get('type', 'unknown')}")
+                    if job.get('code_preview'):
+                        print(f"  Code: {job['code_preview']}")
+                    if job.get('executor_id'):
+                        print(f"  Target: {job['executor_id']}")
+                    if job.get('ttl'):
+                        print(f"  TTL: {job['ttl']} seconds")
+                    print()
+            else:
+                print("No pending jobs found")
+
+            print("-" * 60)
+        else:
+            print(f"Error: {response.get('error', 'Failed to fetch jobs')}")
+
+    except Exception as e:
+        print(f"Error listing jobs: {e}")
+
+
+def daemon_status():
+    """Check daemon status"""
+    port = get_daemon_port()
+    if check_daemon(port):
+        # Get daemon PID
+        import subprocess
+        try:
+            result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
+            for line in result.stdout.split('\n'):
+                if 'nova_daemon.py' in line and 'grep' not in line:
+                    parts = line.split()
+                    pid = parts[1]
+                    start_time = ' '.join(parts[8:10])  # Time columns
+                    print(f"Daemon Status: RUNNING")
+                    print(f"  PID: {pid}")
+                    print(f"  Started: {start_time}")
+                    print(f"  Socket: {DAEMON_HOST}:{port}")
+                    print(f"  Idle timeout: 60 seconds")
+                    return
+        except:
+            pass
+        print("Daemon Status: RUNNING (could not get details)")
+    else:
+        print("Daemon Status: NOT RUNNING")
+
+def daemon_stop():
+    """Stop the daemon"""
+    port = get_daemon_port()
+    if not check_daemon(port):
+        print("Daemon is not running")
+        return
+
+    try:
+        # Send stop signal via TCP socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((DAEMON_HOST, port))
+        # Send special stop message
+        sock.send(b'{"command": "stop"}')
+        sock.close()
+        print("Stop signal sent to daemon")
+    except Exception as e:
+        # Try to kill by PID as fallback
+        import subprocess
+        try:
+            result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
+            for line in result.stdout.split('\n'):
+                if 'nova_daemon.py' in line and 'grep' not in line:
+                    parts = line.split()
+                    pid = parts[1]
+                    subprocess.run(['kill', pid])
+                    print(f"Daemon stopped (PID: {pid})")
+                    return
+        except:
+            print(f"Failed to stop daemon: {e}")
+
+async def get_job_result(job_id):
+    """Get result for a specific job via WebSocket"""
+    try:
+        response = await send_request_via_daemon('get_result', job_id=job_id)
+
+        if response and response.get('status') == 'success':
+            result_data = response.get('result', {})
+
+            print(f"\nResult for job {job_id}:")
+            print("-" * 60)
+
+            status = result_data.get('status', 'unknown')
+            print(f"Status: {status}")
+
+            if status == 'pending':
+                if result_data.get('ttl'):
+                    print(f"TTL: {result_data['ttl']} seconds")
+                if result_data.get('start_time'):
+                    print(f"Started: {result_data['start_time']}")
+            elif status == 'not_found':
+                print(result_data.get('message', 'Job not found'))
+            else:
+                # Display metadata if available
+                metadata = result_data.get('metadata', {})
+                if metadata:
+                    if metadata.get('submitted_at'):
+                        print(f"Submitted: {metadata['submitted_at']}")
+                    if metadata.get('completed_at'):
+                        print(f"Completed: {metadata['completed_at']}")
+                    if metadata.get('duration_seconds') is not None:
+                        duration = metadata['duration_seconds']
+                        if duration >= 60:
+                            print(f"Duration: {duration/60:.1f} minutes ({duration:.1f}s)")
+                        else:
+                            print(f"Duration: {duration:.1f} seconds")
+                    if metadata.get('executor_id'):
+                        print(f"Executor: {metadata['executor_id']}")
+
+                # Display result output
+                if 'result' in result_data:
+                    res = result_data['result']
+                    if res.get('stdout'):
+                        print(f"\nSTDOUT:\n{res['stdout']}")
+                    if res.get('stderr'):
+                        print(f"\nSTDERR:\n{res['stderr']}")
+                    if res.get('error'):
+                        print(f"\nERROR: {res['error']}")
+
+            print("-" * 60)
+        else:
+            print(f"Error: {response.get('error', 'Failed to get job result')}")
+
+    except Exception as e:
+        print(f"Error getting job result: {e}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Nova Bridge CLI - Execute Python code remotely",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+USAGE EXAMPLES:
+  List available executors:     ./nova-lite list
+  Execute Python code:          ./nova-lite exec 'print("Hello")' --executor-id <id>
+  Send custom message:          ./nova-lite message '{"type": "sap_execute", "commands": [...]}' --executor-id <id>
+  Check daemon status:          ./nova-lite status
+  Get job result:              ./nova-lite result <job_id>
+  List pending jobs:           ./nova-lite jobs
+  Stop daemon:                 ./nova-lite stop
+
+HOW IT WORKS:
+  • First execution starts a background daemon for fast subsequent commands
+  • Daemon maintains persistent WebSocket connection to reduce latency
+  • Daemon auto-stops after 60 seconds of idle time
+  • Executors are remote Python environments (e.g., Windows machines)
+
+NOTES:
+  • Use single quotes around code to avoid shell escaping issues
+  • Special characters like ! may cause problems in some shells
+  • Custom timeout: --timeout 60 (default: 30 seconds)"""
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    # Execute command
+    exec_parser = subparsers.add_parser("exec", help="Execute Python code (use single quotes to avoid shell escaping)")
+    exec_parser.add_argument("code", help="Python code to execute (e.g., 'print(\"Hello\")')")
+    exec_parser.add_argument("--executor-id", required=True, help="Target executor ID (required)")
+    exec_parser.add_argument("--timeout", type=int, default=30, help="Timeout in seconds (default: 30)")
+
+    # Message command for custom protocols
+    message_parser = subparsers.add_parser("message", help="Send custom message to executor")
+    message_parser.add_argument("message", help="JSON message to send (e.g., '{\"type\": \"sap_execute\", \"commands\": [...]}')")
+    message_parser.add_argument("--executor-id", required=True, help="Target executor ID (required)")
+    message_parser.add_argument("--timeout", type=int, default=30, help="Timeout in seconds (default: 30)")
+
+    # List executors command
+    list_parser = subparsers.add_parser("list", help="List available executors")
+
+    # List jobs command
+    jobs_parser = subparsers.add_parser("jobs", help="List pending jobs")
+
+    # Get job result command
+    result_parser = subparsers.add_parser("result", help="Get result for a specific job")
+    result_parser.add_argument("job_id", help="Job ID to check")
+
+    # Daemon status command
+    status_parser = subparsers.add_parser("status", help="Check daemon status")
+
+    # Daemon stop command
+    stop_parser = subparsers.add_parser("stop", help="Stop the daemon")
+
+    args = parser.parse_args()
+
+    if args.command == "exec":
+        asyncio.run(send_code(args.code, args.executor_id, args.timeout))
+    elif args.command == "message":
+        asyncio.run(send_message(args.message, args.executor_id, args.timeout))
+    elif args.command == "list":
+        asyncio.run(list_executors())
+    elif args.command == "jobs":
+        asyncio.run(list_jobs())
+    elif args.command == "result":
+        asyncio.run(get_job_result(args.job_id))
+    elif args.command == "status":
+        daemon_status()
+    elif args.command == "stop":
+        daemon_stop()
+    else:
+        parser.print_help()
+        sys.exit(1)

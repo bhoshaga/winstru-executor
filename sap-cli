@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+"""
+sap-cli - SAP2000 CLI using nova-lite message commands
+Implements all 6 SAP2000 message types via WebSocket
+"""
+
+import sys
+import os
+import argparse
+import json
+import subprocess
+import uuid
+from pathlib import Path
+from datetime import datetime
+
+# Configuration file for storing executor ID
+SAP_CONFIG_FILE = Path.home() / '.sap_cli_config.json'
+
+def load_config():
+    """Load configuration including executor ID"""
+    if SAP_CONFIG_FILE.exists():
+        try:
+            with open(SAP_CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_config(config):
+    """Save configuration"""
+    with open(SAP_CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
+
+def get_executor_id():
+    """Get the executor ID from config or prompt user to set it"""
+    config = load_config()
+    executor_id = config.get('executor_id')
+
+    if not executor_id:
+        print("No executor ID configured.")
+        print("Please run 'sap-cli list-executors' to see available executors,")
+        print("then 'sap-cli set-executor <id>' to set the default executor.")
+        return None
+
+    return executor_id
+
+def send_message(message, timeout=60):
+    """Send a message via nova-lite message command"""
+    # Get executor ID
+    executor_id = get_executor_id()
+    if not executor_id:
+        return None, "No executor ID configured", 1
+
+    # Add job_id if not present
+    if 'job_id' not in message:
+        message['job_id'] = f"sap_{uuid.uuid4().hex[:8]}"
+
+    # Convert message to JSON string
+    message_json = json.dumps(message)
+
+    # Build nova-lite command
+    cmd = [
+        './nova-lite', 'message',
+        message_json,
+        '--executor-id', executor_id,
+        '--timeout', str(timeout)
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 10  # Give extra time for nova-lite itself
+        )
+        return result.stdout, result.stderr, result.returncode
+    except subprocess.TimeoutExpired:
+        return "", f"Execution timed out after {timeout} seconds", 1
+    except FileNotFoundError:
+        return "", "nova-lite not found. Make sure it's in the current directory", 1
+    except Exception as e:
+        return "", str(e), 1
+
+def parse_response(stdout):
+    """Parse the response from nova-lite output"""
+    try:
+        # nova-lite outputs the response in a specific format
+        # Look for RESPONSE: line
+        for line in stdout.split('\n'):
+            if line.startswith('RESPONSE:'):
+                response_json = line[9:].strip()  # Remove "RESPONSE: " prefix
+                return json.loads(response_json)
+
+        # If no RESPONSE line, try to parse the whole output
+        if 'result' in stdout or 'status' in stdout:
+            # Try to extract JSON from output
+            import re
+            json_match = re.search(r'\{.*\}', stdout, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+    except:
+        pass
+
+    return None
+
+def cmd_list_executors(args):
+    """List available executors"""
+    print("Listing available executors...")
+
+    try:
+        result = subprocess.run(
+            ['./nova-lite', 'list'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            print(result.stdout)
+        else:
+            print(f"Error listing executors: {result.stderr}")
+            return 1
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+    return 0
+
+def cmd_set_executor(args):
+    """Set the default executor ID"""
+    config = load_config()
+    config['executor_id'] = args.executor_id
+    save_config(config)
+    print(f"✓ Default executor set to: {args.executor_id}")
+    return 0
+
+def cmd_connect(args):
+    """Connect to SAP2000"""
+    print("Connecting to SAP2000...")
+
+    message = {
+        "type": "sap_connect",
+        "timeout": args.timeout
+    }
+
+    stdout, stderr, returncode = send_message(message, timeout=args.timeout)
+
+    if returncode != 0:
+        print(f"Error: {stderr}")
+        return 1
+
+    # Parse response
+    response = parse_response(stdout)
+    if response:
+        result = response.get('result', response)
+        status = result.get('status', 'unknown')
+
+        if status == 'connected':
+            launch_time = result.get('launch_time_seconds', 'unknown')
+            print(f"✓ SAP2000 started successfully ({launch_time}s)")
+        elif status == 'already_connected':
+            print("✓ SAP2000 is already connected")
+        elif status == 'error':
+            print(f"✗ Failed to connect: {result.get('message', 'Unknown error')}")
+            return 1
+        else:
+            print(f"Status: {status}")
+            if result.get('message'):
+                print(f"Message: {result['message']}")
+    else:
+        # Fallback to raw output
+        print(stdout)
+
+    return 0
+
+def cmd_status(args):
+    """Check SAP2000 status"""
+
+    message = {
+        "type": "sap_status"
+    }
+
+    stdout, stderr, returncode = send_message(message)
+
+    if returncode != 0:
+        print(f"Error: {stderr}")
+        return 1
+
+    # Parse response
+    response = parse_response(stdout)
+    if response:
+        result = response.get('result', response)
+
+        if result.get('is_connected'):
+            print("✓ SAP2000 is connected")
+            if result.get('version'):
+                print(f"  Version: {result['version']}")
+            if result.get('current_file'):
+                print(f"  Current file: {result['current_file']}")
+            if result.get('connection_duration_minutes'):
+                duration = result['connection_duration_minutes']
+                print(f"  Connection duration: {duration:.1f} minutes")
+        else:
+            print("✗ SAP2000 is not connected")
+    else:
+        print(stdout)
+
+    return 0
+
+def cmd_api(args):
+    """Execute SAP2000 API code"""
+
+    message = {
+        "type": "sap_execute",
+        "code": args.code,
+        "timeout": args.timeout
+    }
+
+    stdout, stderr, returncode = send_message(message, timeout=args.timeout)
+
+    if returncode != 0:
+        print(f"Error: {stderr}")
+        return 1
+
+    # Parse response
+    response = parse_response(stdout)
+    if response:
+        result = response.get('result', response)
+        status = result.get('status', 'unknown')
+
+        if status == 'success':
+            results = result.get('results', {})
+            if results:
+                for key, value in results.items():
+                    # Format output nicely
+                    if isinstance(value, list) and len(value) > 10:
+                        print(f"{key}: [{value[0]}, {value[1]}, ... {len(value)} items]")
+                    else:
+                        print(f"{key}: {value}")
+            else:
+                print("✓ Code executed successfully")
+
+            if args.verbose and result.get('execution_time'):
+                print(f"Execution time: {result['execution_time']:.3f}s")
+
+        elif status == 'not_connected':
+            print("✗ SAP2000 is not connected. Run 'sap-cli connect' first")
+            return 1
+        elif status == 'error':
+            print(f"✗ Error: {result.get('message', 'Unknown error')}")
+            if args.verbose and result.get('traceback'):
+                print("\nTraceback:")
+                print(result['traceback'])
+            return 1
+        else:
+            print(f"Status: {status}")
+            if result.get('message'):
+                print(f"Message: {result['message']}")
+    else:
+        print(stdout)
+
+    return 0
+
+def cmd_disconnect(args):
+    """Disconnect from SAP2000"""
+
+    message = {
+        "type": "sap_disconnect",
+        "save": args.save
+    }
+
+    print(f"Disconnecting from SAP2000 (save={args.save})...")
+
+    stdout, stderr, returncode = send_message(message)
+
+    if returncode != 0:
+        print(f"Error: {stderr}")
+        return 1
+
+    # Parse response
+    response = parse_response(stdout)
+    if response:
+        result = response.get('result', response)
+        status = result.get('status', 'unknown')
+
+        if status == 'disconnected':
+            save_msg = " (saved)" if args.save else " (not saved)"
+            print(f"✓ SAP2000 closed successfully{save_msg}")
+        elif status == 'not_connected':
+            print("SAP2000 is not connected")
+        elif status == 'error':
+            print(f"✗ Error: {result.get('message', 'Unknown error')}")
+            return 1
+        else:
+            print(f"Status: {status}")
+            if result.get('message'):
+                print(f"Message: {result['message']}")
+    else:
+        print(stdout)
+
+    return 0
+
+def cmd_open(args):
+    """Open a SAP2000 file"""
+
+    # Validate file path
+    file_path = args.file_path
+    if not file_path.startswith('C:\\') and not file_path.startswith('\\\\'):
+        print("Error: File path must be absolute Windows path (e.g., C:\\Models\\Bridge.sdb)")
+        return 1
+
+    message = {
+        "type": "sap_open_file",
+        "file_path": file_path
+    }
+
+    print(f"Opening {os.path.basename(file_path)}...")
+
+    stdout, stderr, returncode = send_message(message, timeout=60)
+
+    if returncode != 0:
+        print(f"Error: {stderr}")
+        return 1
+
+    # Parse response
+    response = parse_response(stdout)
+    if response:
+        result = response.get('result', response)
+        status = result.get('status', 'unknown')
+
+        if status == 'success':
+            print(f"✓ Opened file: {os.path.basename(file_path)}")
+        elif status == 'not_connected':
+            print("✗ SAP2000 is not connected. Run 'sap-cli connect' first")
+            return 1
+        elif status == 'error':
+            print(f"✗ Error: {result.get('message', 'Unknown error')}")
+            return 1
+        else:
+            print(f"Status: {status}")
+            if result.get('message'):
+                print(f"Message: {result['message']}")
+    else:
+        print(stdout)
+
+    return 0
+
+def cmd_save(args):
+    """Save current SAP2000 file"""
+
+    message = {
+        "type": "sap_save_file"
+    }
+
+    # Add file path if provided (Save As)
+    if args.file_path:
+        if not args.file_path.startswith('C:\\') and not args.file_path.startswith('\\\\'):
+            print("Error: File path must be absolute Windows path (e.g., C:\\Models\\Bridge_v2.sdb)")
+            return 1
+        message['file_path'] = args.file_path
+        print(f"Saving as {os.path.basename(args.file_path)}...")
+    else:
+        print("Saving current file...")
+
+    stdout, stderr, returncode = send_message(message, timeout=30)
+
+    if returncode != 0:
+        print(f"Error: {stderr}")
+        return 1
+
+    # Parse response
+    response = parse_response(stdout)
+    if response:
+        result = response.get('result', response)
+        status = result.get('status', 'unknown')
+
+        if status == 'success':
+            if args.file_path:
+                print(f"✓ Saved as: {os.path.basename(args.file_path)}")
+            else:
+                saved_path = result.get('file_path', 'current file')
+                print(f"✓ Saved: {os.path.basename(saved_path) if saved_path != 'current file' else saved_path}")
+        elif status == 'not_connected':
+            print("✗ SAP2000 is not connected. Run 'sap-cli connect' first")
+            return 1
+        elif status == 'error':
+            print(f"✗ Error: {result.get('message', 'Unknown error')}")
+            return 1
+        else:
+            print(f"Status: {status}")
+            if result.get('message'):
+                print(f"Message: {result['message']}")
+    else:
+        print(stdout)
+
+    return 0
+
+def cmd_help(args):
+    """Show help message"""
+    help_text = """
+SAP2000 CLI - Control SAP2000 via nova-lite WebSocket messages
+
+SETUP:
+  sap-cli list-executors              List available Windows executors
+  sap-cli set-executor <id>           Set default executor for all commands
+
+COMMANDS:
+  sap-cli connect                      Launch and connect to SAP2000
+  sap-cli status                       Check SAP2000 connection status
+  sap-cli api "<code>"                 Execute SAP2000 API code
+  sap-cli open <file_path>             Open a SAP2000 model file
+  sap-cli save [<file_path>]           Save current file (or Save As with path)
+  sap-cli disconnect [--save]          Close SAP2000 (optionally save first)
+  sap-cli help                         Show this help message
+
+EXAMPLES:
+  # Initial setup (one time)
+  sap-cli list-executors
+  sap-cli set-executor windows_lite_abc123
+
+  # Connect to SAP2000
+  sap-cli connect
+
+  # Create a new blank model
+  sap-cli api "ret = SapModel.File.NewBlank()"
+
+  # Set units to kip-ft-F
+  sap-cli api "ret = SapModel.SetPresentUnits(4)"
+
+  # Define material
+  sap-cli api "ret = SapModel.PropMaterial.SetMaterial('STEEL', 1)"
+
+  # Create a 2D frame
+  sap-cli api "ret = SapModel.File.New2DFrame(0, 2, 144, 2, 288)"
+
+  # Open an existing file
+  sap-cli open "C:\\Projects\\Bridge.sdb"
+
+  # Save current work
+  sap-cli save
+
+  # Save with new name
+  sap-cli save "C:\\Projects\\Bridge_v2.sdb"
+
+  # Close SAP2000 (save first)
+  sap-cli disconnect --save
+
+OPTIONS:
+  --timeout <seconds>     Timeout for operations (default: 30 for most, 60 for connect)
+  --verbose              Show detailed error messages and execution times
+
+MESSAGE TYPES:
+  This CLI sends structured WebSocket messages to the Windows executor:
+  • sap_connect    - Launch SAP2000 and establish COM connection
+  • sap_execute    - Execute API code with SapModel and mySapObject in context
+  • sap_status     - Check connection and get version info
+  • sap_open_file  - Open a model file (.sdb, .$2k, .s2k, etc.)
+  • sap_save_file  - Save current model (or Save As)
+  • sap_disconnect - Close SAP2000 and clean up
+
+NOTES:
+  • Requires nova-lite in same directory
+  • SAP2000 connection persists between commands
+  • All model data and settings remain in memory until disconnect
+  • Executor ID is saved in ~/.sap_cli_config.json
+"""
+    print(help_text)
+    return 0
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='sap-cli',
+        description='SAP2000 CLI - Control SAP2000 via nova-lite WebSocket messages',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    # Global options
+    parser.add_argument('--verbose', action='store_true', help='Show detailed error messages')
+
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
+    # List executors command
+    list_exec_parser = subparsers.add_parser('list-executors', help='List available executors')
+    list_exec_parser.set_defaults(func=cmd_list_executors)
+
+    # Set executor command
+    set_exec_parser = subparsers.add_parser('set-executor', help='Set default executor')
+    set_exec_parser.add_argument('executor_id', help='Executor ID to use as default')
+    set_exec_parser.set_defaults(func=cmd_set_executor)
+
+    # Connect command
+    connect_parser = subparsers.add_parser('connect', help='Connect to SAP2000')
+    connect_parser.add_argument('--timeout', type=int, default=30, help='Connection timeout (default: 30s)')
+    connect_parser.set_defaults(func=cmd_connect)
+
+    # Status command
+    status_parser = subparsers.add_parser('status', help='Check SAP2000 status')
+    status_parser.set_defaults(func=cmd_status)
+
+    # API command
+    api_parser = subparsers.add_parser('api', help='Execute SAP2000 API code')
+    api_parser.add_argument('code', help='SAP2000 API code to execute')
+    api_parser.add_argument('--timeout', type=int, default=60, help='Execution timeout (default: 60s)')
+    api_parser.set_defaults(func=cmd_api)
+
+    # Disconnect command
+    disconnect_parser = subparsers.add_parser('disconnect', help='Disconnect from SAP2000')
+    disconnect_parser.add_argument('--save', action='store_true', help='Save before closing')
+    disconnect_parser.set_defaults(func=cmd_disconnect)
+
+    # Open command
+    open_parser = subparsers.add_parser('open', help='Open a SAP2000 file')
+    open_parser.add_argument('file_path', help='Windows path to .sdb file')
+    open_parser.set_defaults(func=cmd_open)
+
+    # Save command
+    save_parser = subparsers.add_parser('save', help='Save current file')
+    save_parser.add_argument('file_path', nargs='?', help='Optional: new path for Save As')
+    save_parser.set_defaults(func=cmd_save)
+
+    # Help command
+    help_parser = subparsers.add_parser('help', help='Show help message')
+    help_parser.set_defaults(func=cmd_help)
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Execute command
+    if hasattr(args, 'func'):
+        return args.func(args)
+    else:
+        # No command specified
+        parser.print_help()
+        return 1
+
+if __name__ == '__main__':
+    sys.exit(main())

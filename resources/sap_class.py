@@ -288,82 +288,61 @@ class SAP2000Manager:
     # Private helper methods
     def _connect_sap(self) -> tuple:
         """Internal: Perform COM connection in thread"""
-        import comtypes
-        # Initialize COM for this thread
-        comtypes.CoInitialize()
+        # Import comtypes
+        import comtypes.client
 
-        try:
-            # Create API helper object
-            helper = comtypes.client.CreateObject('SAP2000v1.Helper')
-            helper = helper.QueryInterface(comtypes.gen.SAP2000v1.cHelper)
+        # Create API helper object
+        helper = comtypes.client.CreateObject('SAP2000v1.Helper')
+        helper = helper.QueryInterface(comtypes.gen.SAP2000v1.cHelper)
 
-            # Create SAP2000 instance
-            sap_object = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
+        # Create SAP2000 instance
+        sap_object = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
 
-            # Start SAP2000 application
-            ret = sap_object.ApplicationStart()
+        # Start SAP2000 application
+        ret = sap_object.ApplicationStart()
 
-            if ret == 0:
-                # Make visible
-                sap_object.Visible = True
-                return sap_object, sap_object.SapModel, ret
-            else:
-                return None, None, ret
-        finally:
-            # Uninitialize COM for this thread
-            comtypes.CoUninitialize()
+        if ret == 0:
+            # Make visible
+            sap_object.Visible = True
+            return sap_object, sap_object.SapModel, ret
+        else:
+            return None, None, ret
 
     def _execute_code(self, code: str) -> Dict[str, Any]:
         """Internal: Execute code with SAP objects in context"""
-        import comtypes
-        # Initialize COM for this thread
-        comtypes.CoInitialize()
+        # Create execution context with SAP objects
+        exec_globals = {
+            'mySapObject': self.instance,
+            'SapModel': self.model,
+            'ret': None  # Common return variable
+        }
 
-        try:
-            # Create execution context with SAP objects
-            exec_globals = {
-                'mySapObject': self.instance,
-                'SapModel': self.model,
-                'ret': None  # Common return variable
-            }
+        # Execute the code
+        exec(code, exec_globals)
 
-            # Execute the code
-            exec(code, exec_globals)
+        # Extract any variables that were set
+        results = {}
+        for key, value in exec_globals.items():
+            if key not in ['mySapObject', 'SapModel', '__builtins__']:
+                # Try to make value JSON serializable
+                try:
+                    if hasattr(value, '__iter__') and not isinstance(value, str):
+                        results[key] = list(value)
+                    else:
+                        results[key] = value
+                except:
+                    results[key] = str(value)
 
-            # Extract any variables that were set
-            results = {}
-            for key, value in exec_globals.items():
-                if key not in ['mySapObject', 'SapModel', '__builtins__']:
-                    # Try to make value JSON serializable
-                    try:
-                        if hasattr(value, '__iter__') and not isinstance(value, str):
-                            results[key] = list(value)
-                        else:
-                            results[key] = value
-                    except:
-                        results[key] = str(value)
-
-            return results
-        finally:
-            # Uninitialize COM for this thread
-            comtypes.CoUninitialize()
+        return results
 
     def _get_model_info(self) -> tuple:
         """Internal: Get version and filename from model"""
-        import comtypes
-        # Initialize COM for this thread
-        comtypes.CoInitialize()
+        version = self.instance.SapModel.GetVersion()
+        version_str = version[0] if version else "Unknown"
 
-        try:
-            version = self.instance.SapModel.GetVersion()
-            version_str = version[0] if version else "Unknown"
-
-            # Get current filename
-            filename = self.model.GetModelFilename()
-            return version_str, filename
-        finally:
-            # Uninitialize COM for this thread
-            comtypes.CoUninitialize()
+        # Get current filename
+        filename = self.model.GetModelFilename()
+        return version_str, filename
 
     def _cleanup_state(self):
         """Internal: Clear all state variables"""
