@@ -297,11 +297,11 @@ class SAP2000Manager:
             helper = comtypes.client.CreateObject('SAP2000v1.Helper')
             helper = helper.QueryInterface(comtypes.gen.SAP2000v1.cHelper)
 
-        # Create SAP2000 instance
-        sap_object = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
+            # Create SAP2000 instance
+            sap_object = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
 
-        # Start SAP2000 application
-        ret = sap_object.ApplicationStart()
+            # Start SAP2000 application
+            ret = sap_object.ApplicationStart()
 
             if ret == 0:
                 # Make visible
@@ -327,21 +327,21 @@ class SAP2000Manager:
                 'ret': None  # Common return variable
             }
 
-        # Execute the code
-        exec(code, exec_globals)
+            # Execute the code
+            exec(code, exec_globals)
 
-        # Extract any variables that were set
-        results = {}
-        for key, value in exec_globals.items():
-            if key not in ['mySapObject', 'SapModel', '__builtins__']:
-                # Try to make value JSON serializable
-                try:
-                    if hasattr(value, '__iter__') and not isinstance(value, str):
-                        results[key] = list(value)
-                    else:
-                        results[key] = value
-                except:
-                    results[key] = str(value)
+            # Extract any variables that were set
+            results = {}
+            for key, value in exec_globals.items():
+                if key not in ['mySapObject', 'SapModel', '__builtins__']:
+                    # Try to make value JSON serializable
+                    try:
+                        if hasattr(value, '__iter__') and not isinstance(value, str):
+                            results[key] = list(value)
+                        else:
+                            results[key] = value
+                    except:
+                        results[key] = str(value)
 
             return results
         finally:
